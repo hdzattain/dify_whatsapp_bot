@@ -1,0 +1,52 @@
+# file: insert_api.py
+from flask import Flask, request, jsonify
+import pymysql
+
+app = Flask(__name__)
+
+# 这里填你的数据库连接信息
+DB_CONFIG = {
+    "host": "YOUR_DB_HOST",
+    "port": 3306,
+    "user": "YOUR_DB_USER",
+    "password": "YOUR_DB_PASS",
+    "database": "YOUR_DB_NAME",
+    "charset": "utf8mb4"
+}
+
+@app.route("/insert", methods=["POST"])
+def insert():
+    data = request.json
+    # 你要插入的表和列
+    sql = """
+      INSERT INTO demo
+        (id, uuid, bstudio_create_time, location, number, subcontractor, date, floor, name, project, morning, afternoon, xiaban, operation)
+      VALUES
+        (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    """
+    params = (
+        data["id"],
+        data["uuid"],
+        data["bstudio_create_time"],
+        data["location"],
+        data["number"],
+        data["subcontractor"],
+        data.get("date") or None,
+        data["floor"],
+        data.get("name") or None,
+        data.get("project") or None,
+        data["morning"],
+        data["afternoon"],
+        data["xiaban"],
+        data.get("operation") or None
+    )
+    conn = pymysql.connect(**DB_CONFIG)
+    with conn.cursor() as cur:
+        cur.execute(sql, params)
+        conn.commit()
+    conn.close()
+    return jsonify({"status": "ok", "inserted_id": data["id"]})
+
+if __name__ == "__main__":
+    # 在 0.0.0.0:5000 上监听
+    app.run(host="0.0.0.0", port=5000)
