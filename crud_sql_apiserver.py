@@ -6,6 +6,7 @@ import re
 from datetime import datetime, date
 import uuid
 from dateutil import parser as date_parser
+from typing import Optional
 
 app = Flask(__name__)
 
@@ -20,13 +21,12 @@ DB_CONFIG = {
     "cursorclass": pymysql.cursors.DictCursor
 }
 
-TABLE_NAME = "your_table_name"
+TABLE_NAME = "e_permit3"
 FIELDS = [
-    "id", "sys_platform", "uuid", "bstudio_create_time",
+    "id", "group_id", "project", "uuid", "bstudio_create_time",
     "location", "number", "floor", "morning",
-    "afternoon", "xiaban", "subcontrator"
+    "afternoon", "xiaban", "subcontractor", "part_leave_number"
 ]
-
 # --- DB Utility ---
 def get_conn():
     return connect(**DB_CONFIG)
@@ -51,41 +51,300 @@ def normalize_date(value):
         return None
 
 # --- Routes ---
+@app.route('/')
+def index():
+    return "API is running."
+
 @app.route("/records", methods=["POST"])
 def create_record():
     data = request.get_json(force=True)
-    record = {}
 
-    record["id"] = data.get("id") or int(datetime.utcnow().timestamp())
-    record["uuid"] = data.get("uuid") or str(uuid.uuid4())
+    # 1. 支持批量或单条
+    if isinstance(data, list):
+        results = []
+        for rec in data:
+            res = insert_one_record(rec)
+            results.append(res)
+        # 可返回所有条目结果
+        return jsonify(results), 207 if any(r.get('error') for r in results) else 201
 
-    for field in FIELDS:
-        if field not in record:
-            record[field] = data.get(field)
+    # 单条
+    res = insert_one_record(data)
+    if "error" in res:
+        return jsonify(res), 200
+    return jsonify(res), 201
 
-    # Normalize time format
-    if record.get("bstudio_create_time"):
-        try:
-            dt = date_parser.parse(record["bstudio_create_time"])
-            record["bstudio_create_time"] = dt.strftime("%Y-%m-%d %H:%M:%S")
-        except:
-            record["bstudio_create_time"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    else:
-        record["bstudio_create_time"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+# def insert_one_record(data):
+#     record = {}
+#     required = ["location", "subcontractor", "number", "floor", "group_id"]
+#     missing = [k for k in required if not data.get(k)]
+#     if missing:
+#         return {"error": f"缺少字段: {', '.join(missing)}，请重新输入"}
 
-    cols = ", ".join(f"`{f}`" for f in FIELDS)
-    placeholders = ", ".join(["%s"] * len(FIELDS))
-    values = tuple(record[f] for f in FIELDS)
-    sql = f"INSERT INTO `{TABLE_NAME}` ({cols}) VALUES ({placeholders})"
+#     # 1. 查询是否有当日同key的已有数据
+#     date_str = normalize_date(data.get("bstudio_create_time") or datetime.utcnow().strftime("%Y-%m-%d"))
+#     key_sql = f"""SELECT id, part_leave_number, number FROM `{TABLE_NAME}` 
+#         WHERE `location`=%s AND `subcontractor`=%s AND `number`=%s AND `floor`=%s AND `group_id`=%s
+#         AND DATE(`bstudio_create_time`)=%s
+#         ORDER BY id DESC LIMIT 1
+#     """
+#     key_params = (
+#         data["location"], data["subcontractor"], data["number"],
+#         data["floor"], data["group_id"], date_str
+#     )
+#     conn = get_conn()
+#     latest = None
+#     try:
+#         with conn.cursor() as cur:
+#             cur.execute(key_sql, key_params)
+#             latest = cur.fetchone()
+#     finally:
+#         conn.close()
 
+#     number = int(data["number"])
+#     new_part = int(data.get("part_leave_number", 0) or 0)
+#     # 检查累加部分撤离是否超限
+#     if latest:
+#         acc_part = int(latest["part_leave_number"] or 0)
+#         final_part = acc_part + new_part
+#         if final_part > number:
+#             return {"error": f"部分撤離人數({final_part})不能大於總人數({number})，请重新输入"}
+#         # 如果需要更新已有数据而不是新插入，可以写成update逻辑（如你实际需求）
+#         # 这里按新插入策略，保存累计的数
+#         record["part_leave_number"] = final_part
+#     else:
+#         if new_part > number:
+#             return {"error": f"部分撤離人數({new_part})不能大於總人數({number})，请重新输入"}
+#         record["part_leave_number"] = new_part
+
+#     # 其它字段
+#     record["uuid"] = data.get("uuid") or str(uuid.uuid4())
+#     for field in FIELDS:
+#         if field not in record and field != "id":
+#             record[field] = data.get(field)
+#     # 时间归一化
+#     if record.get("bstudio_create_time"):
+#         try:
+#             dt = date_parser.parse(record["bstudio_create_time"])
+#             record["bstudio_create_time"] = dt.strftime("%Y-%m-%d %H:%M:%S")
+#         except:
+#             record["bstudio_create_time"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+#     else:
+#         record["bstudio_create_time"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+#     # 插入
+#     fields_for_insert = [f for f in FIELDS if f != "id"]
+#     cols = ", ".join(f"`{f}`" for f in fields_for_insert)
+#     placeholders = ", ".join(["%s"] * len(fields_for_insert))
+#     values = tuple(record[f] for f in fields_for_insert)
+#     sql = f"INSERT INTO `{TABLE_NAME}` ({cols}) VALUES ({placeholders})"
+
+#     try:
+#         conn = get_conn()
+#         with conn.cursor() as cur:
+#             cur.execute(sql, values)
+#             conn.commit()
+#             inserted_id = cur.lastrowid
+#     except IntegrityError as e:
+#         return {"error": "主键冲突", "detail": str(e)}
+#     except DataError as e:
+#         return {"error": "数据错误", "detail": str(e)}
+#     finally:
+#         conn.close()
+
+#     return {"status": "ok", "inserted_id": inserted_id}
+from datetime import datetime
+import uuid
+
+def insert_one_record(data):
+    """
+    智能插入或累加记录
+    - 如果当天、同 group_id/location/subcontractor/number/floor 已存在，则累加 part_leave_number
+    - 若累加超过 number，报错
+    - 没有则新插入
+    - group_id、part_leave_number 字段必须支持
+    """
+    # 校验必填字段
+    required = ["location", "subcontractor", "number", "floor"]
+    
+    name_dict = {
+        "location": "位置",
+        "subcontractor": "分判",
+        "number": "人數",
+        "floor": "樓層"
+    }
+    missing = [name_dict[k] for k in required if not data.get(k)]
+    if missing:
+        return {"error": f"缺少字段: {', '.join(missing)}，請重新按照[位置]，[分判]，[人數]，[樓層]格式輸入，如：“申請 EP7，中建，1人，G/F"}
+
+    number = int(data["number"])
+    new_part = int(data.get("part_leave_number", 0) or 0)
+    today_str = (data.get("bstudio_create_time") or datetime.utcnow().strftime("%Y-%m-%d"))[:10]
+    start_time = f"{today_str} 00:00:00"
+    end_time = f"{today_str} 23:59:59"
+
+    # 查找当天已存在的记录
+    check_sql = f"""
+        SELECT id, part_leave_number, number FROM `{TABLE_NAME}`
+        WHERE `group_id`=%s AND `location`=%s AND `subcontractor`=%s AND `number`=%s AND `floor`=%s
+        AND `bstudio_create_time` BETWEEN %s AND %s
+        ORDER BY id DESC LIMIT 1
+    """
+    params = (
+        data["group_id"],
+        data["location"],
+        data["subcontractor"],
+        data["number"],
+        data["floor"],
+        start_time,
+        end_time
+    )
+
+    conn = get_conn()
+    exists = None
     try:
-        execute_query(sql, values)
-    except IntegrityError as e:
-        return jsonify({"error": "主键冲突", "detail": str(e)}), 400
-    except DataError as e:
-        return jsonify({"error": "数据错误", "detail": str(e)}), 400
+        with conn.cursor() as cur:
+            cur.execute(check_sql, params)
+            exists = cur.fetchone()
+    finally:
+        conn.close()
 
-    return jsonify({"status": "ok", "inserted_id": record["id"]}), 201
+    
+
+    # 只允许部分撤离累计不超过总人数
+    if exists:
+        xiaban = int(exists.get("xiaban") or 0)
+        final_part = int(exists.get("part_leave_number") or 0) if xiaban == 0 else number
+        if final_part > number:
+            return {"error": f"部分撤離人數({final_part})不能大於總人數({number})，请重新输入"}
+        # 累加并更新
+        update_sql = f"UPDATE `{TABLE_NAME}` SET `part_leave_number`=%s WHERE id=%s"
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(update_sql, (final_part, exists["id"]))
+                conn.commit()
+            return {
+                "status": "updated",
+                "id": exists["id"],
+                "part_leave_number": final_part
+            }
+        finally:
+            conn.close()
+    else:
+        # 新插入校验
+        if new_part > number:
+            return {"error": f"部分撤離人數({new_part})不能大於總人數({number})，请重新输入"}
+
+        # 构造插入数据
+        record = {k: data.get(k) for k in FIELDS}
+        record["id"] = data.get("id") or int(datetime.utcnow().timestamp())
+        record["uuid"] = data.get("uuid") or str(uuid.uuid4())
+        record["xiaban"] = 1 if new_part == number else 0
+
+        # 处理时间字段
+        if record.get("bstudio_create_time"):
+            try:
+                dt = date_parser.parse(record["bstudio_create_time"])
+                record["bstudio_create_time"] = dt.strftime("%Y-%m-%d %H:%M:%S")
+            except:
+                record["bstudio_create_time"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            record["bstudio_create_time"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+        # 插入
+        cols = ", ".join(f"`{f}`" for f in FIELDS)
+        placeholders = ", ".join(["%s"] * len(FIELDS))
+        values = tuple(record[f] for f in FIELDS)
+        sql = f"INSERT INTO `{TABLE_NAME}` ({cols}) VALUES ({placeholders})"
+        try:
+            execute_query(sql, values)
+        except Exception as e:
+            return {"error": "插入失败", "detail": str(e)}
+        return {"status": "ok", "inserted_id": record["id"]}
+
+
+# def insert_one_record(data):
+#     record = {}
+#     # 1. 必填校验（一次性返回所有缺失字段）
+#     required = ["group_id", "location", "subcontractor", "number", "floor"]
+#     missing = [k for k in required if not data.get(k)]
+#     if missing:
+#         return {"error": f"缺少字段: {', '.join(missing)}，请重新输入"}
+
+#     # 2. 限制重复（同一天、同位置、分判、人数、楼层只允许一条，部分撤离除外）
+#     date_str = normalize_date(data.get("bstudio_create_time") or datetime.utcnow().strftime("%Y-%m-%d"))
+#     check_sql = f"""SELECT COUNT(1) as cnt FROM `{TABLE_NAME}` 
+#         WHERE `location`=%s AND `subcontractor`=%s AND `number`=%s AND `floor`=%s
+#         AND DATE(`bstudio_create_time`)=%s
+#     """
+#     params = (data["location"], data["subcontractor"], data["number"], data["floor"], date_str)
+#     part_leave_number = int(data.get("part_leave_number", 0) or 0)
+#     record["part_leave_number"] = part_leave_number
+
+#     conn = get_conn()
+#     try:
+#         with conn.cursor() as cur:
+#             cur.execute(check_sql, params)
+#             exists = cur.fetchone()
+#         if exists and exists["cnt"] > 0 and part_leave_number == 0:
+#             return {"error": "当天已存在相同位置、分判、人数、楼层的记录，请勿重复提交"}
+#     finally:
+#         conn.close()
+#     number = int(data["number"])
+#     new_part = int(data.get("part_leave_number", 0) or 0)
+#     # 检查累加部分撤离是否超限
+#     if exists:
+#         acc_part = int(exists.get("part_leave_number") or 0)
+#         final_part = acc_part + new_part
+#         if final_part > number:
+#             return {"error": f"部分撤離人數({final_part})不能大於總人數({number})，请重新输入"}
+#         # 如果需要更新已有数据而不是新插入，可以写成update逻辑（如你实际需求）
+#         # 这里按新插入策略，保存累计的数
+#         record["part_leave_number"] = final_part
+#     else:
+#         if new_part > number:
+#             return {"error": f"部分撤離人數({new_part})不能大於總人數({number})，请重新输入"}
+#         record["part_leave_number"] = new_part
+
+#     # 3. 其它字段自动赋值（不要传id!）
+#     record["uuid"] = data.get("uuid") or str(uuid.uuid4())
+#     for field in FIELDS:
+#         if field not in record and field != "id":
+#             record[field] = data.get(field)
+
+#     # Normalize time format
+#     if record.get("bstudio_create_time"):
+#         try:
+#             dt = date_parser.parse(record["bstudio_create_time"])
+#             record["bstudio_create_time"] = dt.strftime("%Y-%m-%d %H:%M:%S")
+#         except:
+#             record["bstudio_create_time"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+#     else:
+#         record["bstudio_create_time"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+#     # 插入时去掉id字段
+#     fields_for_insert = [f for f in FIELDS if f != "id"]
+#     cols = ", ".join(f"`{f}`" for f in fields_for_insert)
+#     placeholders = ", ".join(["%s"] * len(fields_for_insert))
+#     values = tuple(record[f] for f in fields_for_insert)
+#     sql = f"INSERT INTO `{TABLE_NAME}` ({cols}) VALUES ({placeholders})"
+
+#     try:
+#         conn = get_conn()
+#         with conn.cursor() as cur:
+#             cur.execute(sql, values)
+#             conn.commit()
+#             inserted_id = cur.lastrowid  # 获取MySQL自增id
+#     except IntegrityError as e:
+#         return {"error": "主键冲突", "detail": str(e)}
+#     except DataError as e:
+#         return {"error": "数据错误", "detail": str(e)}
+#     finally:
+#         conn.close()
+
+#     return {"status": "ok", "inserted_id": inserted_id}
+
 
 @app.route("/records/<int:record_id>", methods=["GET"])
 def get_record(record_id):
@@ -93,18 +352,64 @@ def get_record(record_id):
     rows = execute_query(sql, (record_id,), fetch=True)
     return jsonify(rows[0]) if rows else (jsonify({"error": "未找到该记录"}), 404)
 
+def normalize_date(dt_str: str) -> Optional[str]:
+    """
+    支持多种输入格式：
+      - 'Thu, 24 Jul 2025 12:06:05 GMT'
+      - '2025-07-28 10:25:35'
+      - '2025-07-28'
+    成功解析返回 'YYYY-MM-DD'，否则返回 None。
+    """
+    formats = [
+        "%a, %d %b %Y %H:%M:%S GMT",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d"
+    ]
+    for fmt in formats:
+        try:
+            return datetime.strptime(dt_str, fmt).strftime("%Y-%m-%d")
+        except Exception:
+            continue
+    return None
+
 @app.route("/records", methods=["GET"])
 def list_records():
-    sql = f"SELECT * FROM `{TABLE_NAME}` ORDER BY `id`"
-    return jsonify(execute_query(sql, fetch=True))
+    # 支持通过url参数做简单筛选，比如 /records?group_id=xxx&subcontractor=xxx
+    filters = request.args.to_dict()
+    if not filters:
+        sql = f"SELECT * FROM `{TABLE_NAME}` ORDER BY `id`"
+        rows = execute_query(sql, fetch=True)
+        return jsonify(rows)
+
+    # 自动拼接 WHERE 条件
+    conditions = []
+    params = []
+    for k, v in filters.items():
+        if k in FIELDS:  # 只支持已知字段
+            conditions.append(f"`{k}`=%s")
+            params.append(v)
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    sql = f"SELECT * FROM `{TABLE_NAME}` {where} ORDER BY `id`"
+    rows = execute_query(sql, tuple(params), fetch=True)
+    return jsonify(rows)
+
 
 @app.route("/records/today", methods=["GET"])
 def get_today_records():
     today_str = date.today().strftime("%Y-%m-%d")
     start_time = f"{today_str} 00:00:00"
     end_time = f"{today_str} 23:59:59"
-    sql = f"SELECT * FROM `{TABLE_NAME}` WHERE `bstudio_create_time` BETWEEN %s AND %s ORDER BY `id`"
-    return jsonify(execute_query(sql, (start_time, end_time), fetch=True))
+    filters = request.args.to_dict()
+    conditions = ["`bstudio_create_time` BETWEEN %s AND %s"]
+    params = [start_time, end_time]
+    # 支持额外group_id等筛选
+    for k, v in filters.items():
+        if k in FIELDS:
+            conditions.append(f"`{k}`=%s")
+            params.append(v)
+    where = f"WHERE {' AND '.join(conditions)}"
+    sql = f"SELECT * FROM `{TABLE_NAME}` {where} ORDER BY `id`"
+    return jsonify(execute_query(sql, tuple(params), fetch=True))
 
 @app.route("/records/update_by_condition", methods=["PUT"])
 def update_by_condition():
